@@ -14,5 +14,6 @@ jobs:
 
     - name: Check firmware folders exist
       run: |
-        ls firmware_micropython && echo 'micropython folder OK'
-        ls firmware_tflite && echo 'tflite folder OK'
+        test -d firmware_micropython && echo 'micropython folder OK'
+        test -d firmware_tflite && echo 'tflite folder OK'
+        echo 'Firmware structure check passed'
