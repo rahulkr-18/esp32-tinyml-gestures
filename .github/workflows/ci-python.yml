@@ -4,6 +4,11 @@ on: [push, pull_request]
 jobs:
   test-training:
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+
     steps:
     - uses: actions/checkout@v4
 
@@ -14,8 +19,65 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install numpy pandas scikit-learn tensorflow
+        pip install numpy==1.26.4 pandas==2.2.2 scikit-learn==1.5.0 tensorflow==2.16.1 matplotlib==3.8.4 boto3 awscli tf-keras
 
-    - name: Run smoke test
+    - name: Generate synthetic data
       run: |
-        python -c "import numpy; import sklearn; import tensorflow; print('All imports OK')"
+        cd $GITHUB_WORKSPACE
+        python python_training/generate_data.py
+
+    - name: Train Random Forest model
+      run: |
+        cd $GITHUB_WORKSPACE
+        python python_training/train_model.py
+
+    - name: Check model accuracy
+      run: |
+        python -c "
+        import pickle, numpy as np, pandas as pd
+        from sklearn.metrics import accuracy_score
+        from sklearn.model_selection import train_test_split
+        df = pd.read_csv('data/raw/gestures_all.csv')
+        X = df.drop('label', axis=1).values
+        from sklearn.preprocessing import LabelEncoder
+        le = LabelEncoder()
+        y = le.fit_transform(df['label'].values)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        with open('data/processed/model.pkl', 'rb') as f:
+            model = pickle.load(f)
+        acc = accuracy_score(y_test, model.predict(X_test))
+        print(f'Accuracy: {acc*100:.2f}%')
+        assert acc >= 0.85, f'Accuracy {acc:.2f} below threshold 0.85'
+        print('Accuracy check PASSED')
+        "
+
+    - name: Convert to TFLite
+      run: |
+        cd $GITHUB_WORKSPACE
+        TF_USE_LEGACY_KERAS=1 python python_training/convert_to_tflite.py
+
+    - name: Check TFLite model size
+      run: |
+        SIZE=$(wc -c < data/processed/gesture_model.tflite)
+        echo "TFLite model size: $SIZE bytes"
+        if [ $SIZE -gt 102400 ]; then
+          echo "Model too large for ESP32 (>100KB)"
+          exit 1
+        fi
+        echo "Size check PASSED"
+
+    - name: Upload model to S3
+      run: |
+        aws s3 cp data/processed/model.pkl s3://esp32-tinyml-gestures-bucket/models/model.pkl
+        aws s3 cp data/processed/gesture_model.tflite s3://esp32-tinyml-gestures-bucket/models/gesture_model.tflite
+        aws s3 cp data/processed/label_encoder.pkl s3://esp32-tinyml-gestures-bucket/models/label_encoder.pkl
+        echo "All models uploaded to S3"
+
+    - name: Upload model artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: trained-models
+        path: |
+          data/processed/model.pkl
+          data/processed/gesture_model.tflite
+          firmware_tflite/gesture_model.h
