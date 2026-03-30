@@ -1,0 +1,3 @@
+firmware_tflite/gesture_model.h linguist-generated=true
+lambda_package/** linguist-vendored=true
+lambda_layer/** linguist-vendored=true
